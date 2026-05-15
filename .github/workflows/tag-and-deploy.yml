@@ -1,0 +1,60 @@
+name: Tag and Deploy
+
+on:
+  repository_dispatch:
+    types: [upstream-release]
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: 'Upstream version (e.g. v1.2.3 or 1.2.3)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag-and-deploy
+  cancel-in-progress: false
+
+jobs:
+  bump-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve upstream version
+        id: upstream
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            raw="${{ github.event.client_payload.version }}"
+          else
+            raw="${{ inputs.upstream_version }}"
+          fi
+          # strip optional leading "v" so it mirrors the format in version.py
+          clean="${raw#v}"
+          echo "version=$clean" >> "$GITHUB_OUTPUT"
+
+      - name: Show received payload
+        run: echo "Triggered by upstream release ${{ steps.upstream.outputs.version }}"
+
+      - name: Bump VERSION (patch) and align repo_a_version
+        id: local
+        run: |
+          OLD=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' version.py)
+          IFS='.' read -r MAJ MIN PATCH <<< "$OLD"
+          NEW="$MAJ.$MIN.$((PATCH + 1))"
+          sed -i -E 's/^(VERSION = ")[^"]*(")$/\1'"$NEW"'\2/' version.py
+          sed -i -E 's/^(repo_a_version = ")[^"]*(")$/\1'"${{ steps.upstream.outputs.version }}"'\2/' version.py
+          echo "tag=v$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.py
+          git commit -m "chore: release ${{ steps.local.outputs.tag }} (upstream ${{ steps.upstream.outputs.version }})"
+          git tag "${{ steps.local.outputs.tag }}"
+          git push origin HEAD
+          git push origin "${{ steps.local.outputs.tag }}"
